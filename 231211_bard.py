@@ -9,9 +9,9 @@ How to get session_id: please see the tutorial at https://www.youtube.com/watch?
 """
 
 from bardapi import Bard
+import secret
 
-session_id="dwhiWRFI6do6zuWLSYQ4RDisIAFS7MDddIXuhDzNf4_CRd6VOkQ18jJmhYuOKFJEOldB6Q."
-Barder = Bard(session_id)
+Barder = Bard(secret.bard_session_id)
 
 
 response = Barder.get_answer("Please give me the history of company Detalytics in Singapore, like which year established, who the founder is?")['content']

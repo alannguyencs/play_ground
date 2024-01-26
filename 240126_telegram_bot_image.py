@@ -19,7 +19,7 @@ chat = ChatOpenAI(temperature=0, openai_api_key=secret.openai_api_key,
                   openai_organization=secret.openai_organization)
 
 def get_chinese_dish(text):
-    prompt = f"You are a helpful assistant that understand Chinese and food.\n\
+    prompt = f"You are a helpful assistant that understand Chinese and food and drink.\n\
                 Split the following text to extract Chinese dishes.\
                 Each dish is written in Chinese and separated by a line.\n\
                 On each line, write the dish in Chinese, then a comma, then the English translation\
