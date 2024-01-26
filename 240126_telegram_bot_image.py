@@ -1,14 +1,13 @@
 import secret
-import requests
 import datetime
 import time
 import easyocr
-
+import os
 import telebot
 from io import BytesIO
 from deep_translator import GoogleTranslator
 from alutils import alos, alimage
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import glob
 #===================================================================================================
 from langchain.schema import HumanMessage, SystemMessage
@@ -17,6 +16,14 @@ from langchain_openai import ChatOpenAI
 # Initialize the ChatOpenAI with your API key and optional organization ID
 chat = ChatOpenAI(temperature=0, openai_api_key=secret.openai_api_key, 
                   openai_organization=secret.openai_organization)
+
+def is_a_dish(text):
+    prompt = f"You are a helpful assistant that understand Chinese and food and drink.\n\
+                Is the following text a dish or a drink?\n\
+                Return 1 if true, 0 if false.\n\
+                Text: {text}\n\""
+    response = chat([SystemMessage(content=prompt)])
+    return response.content == '1'
 
 def get_chinese_dish(text):
     prompt = f"You are a helpful assistant that understand Chinese and food and drink.\n\
@@ -27,14 +34,16 @@ def get_chinese_dish(text):
                 Text: {text}\n\""
     # Send the prompt to the chat model and get the response
     response = chat([SystemMessage(content=prompt)])
-    print (text, response.content)
-    return response.content.split('\n')
+    dishes = response.content.split('\n')
+    dishes = [dish.replace('/', '或') for dish in dishes if is_a_dish(dish)]
+    return dishes
 
 #===================================================================================================
 from icrawler.builtin import GoogleImageCrawler
 
 def form_image(image_dir):
-    image_paths = glob.glob(f"{image_dir}*")
+    print (image_dir)
+    image_paths = glob.glob(f"{image_dir}/*")
     images = []
     for image_path in image_paths:
         print (image_path)
@@ -46,32 +55,42 @@ def form_image(image_dir):
             pass
     if len(images) == 0:
         return None
-    full_image = alimage.stack_images(images[:4], direction='HORIZONTAL')
+    first_image = alimage.stack_images(images[:4], direction='HORIZONTAL')
+    second_image = alimage.stack_images(images[-4:], direction='HORIZONTAL')
+    w, h = first_image.size
+    full_image = alimage.stack_images([first_image, second_image], 
+                                      unit_w=w, unit_h=h, direction='VERTICAL')
     return full_image
 
+def put_text_on_image(image, text):
+    text = text.replace(',', '\n')
+    unit_size = 256
+    gap = 16
+    pos_x, pos_y = 32, 32
+    full_image = Image.new('RGB', (unit_size * 4 + gap * 3, 
+                                   unit_size * 3 + gap), (255, 255, 255))
+    full_image.paste(image, (0, unit_size))
+    img_draw = ImageDraw.Draw(full_image)
+    font = ImageFont.truetype('data/NotoSans.ttf', size=40)
+    encoded_text = text.encode('utf-8')
+    img_draw.text((pos_x, pos_y), encoded_text.decode('utf-8'), fill='black', font=font)
+    return full_image
+
+
 def crawl_image(keyword, prefix='香港食品: '): #Hong Kong food
-    image_dir = alos.gen_dir(f'data/image/{keyword}')
-    google_crawler = GoogleImageCrawler(parser_threads=2, downloader_threads=4, 
-                                        storage={'root_dir': image_dir})
-    google_crawler.crawl(keyword=prefix + keyword, 
-                         max_num=10, min_size=(256, 256), max_size=None)
+    folder_name = '_'.join(keyword.split(',')[:2]) #get chinese and english name
+    image_dir = f'data/image/{folder_name}'
+    print (image_dir, os.path.isdir(image_dir))
+    if not os.path.isdir(image_dir):
+        os.makedirs(image_dir)
+        chinese_keyword = keyword.split(',')[0]
+        google_crawler = GoogleImageCrawler(parser_threads=2, downloader_threads=4, 
+                                            storage={'root_dir': image_dir})
+        google_crawler.crawl(keyword=prefix + chinese_keyword, 
+                            max_num=12, min_size=(256, 256), max_size=None)
     vis_image = form_image(image_dir)
-    return vis_image
-
-
-TRANSLATION_ERROR = "Translation error. Please try again later."
-translator = GoogleTranslator(source='en', target='vi')
-def translate(text):
-    num_try = 10
-    while num_try > 0:
-        try:
-            return translator.translate(text)
-        except:
-            num_try -= 1
-            time.sleep(1)
-            pass
-    # return translator.translate(text)
-    return TRANSLATION_ERROR
+    label_image = put_text_on_image(vis_image, keyword)
+    return label_image
 
 def image_to_text(image_path):
     reader = easyocr.Reader(['ch_tra'])
@@ -106,16 +125,13 @@ def handle_photo(message):
     texts = image_to_text(image_path)
     chinese_dishes = get_chinese_dish(texts)
     chinese_dishes = [dish for dish in chinese_dishes if dish.count(',') == 2]
-    # text_dishes = [text for text in texts if is_a_dish(text)]
-    # text_dishes = [text for text in texts]
-    for i, dish in enumerate(chinese_dishes):
-        print (i, dish)
+
     if chinese_dishes and len(chinese_dishes) > 0:
-        # crawl_image(text_dishes[0])
-        # response = '\n'.join(chinese_dishes)
-        for dish in chinese_dishes:
+        for i, dish in enumerate(chinese_dishes):
             bot.reply_to(message, dish)
-            vis_image = crawl_image(dish.split(',')[0])
+            vis_image = crawl_image(dish)
+            if vis_image is None:
+                continue
             bio = BytesIO()
             bio.name = 'data/image.jpeg'
             vis_image.save(bio, 'JPEG')
