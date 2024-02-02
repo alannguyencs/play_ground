@@ -5,10 +5,11 @@ import easyocr
 import os
 import telebot
 from io import BytesIO
-from deep_translator import GoogleTranslator
+from tqdm import tqdm
 from alutils import alos, alimage
 from PIL import Image, ImageDraw, ImageFont
 import glob
+import multiprocessing
 #===================================================================================================
 from langchain.schema import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -92,13 +93,36 @@ def crawl_image(keyword, prefix='香港食品: '): #Hong Kong food
     label_image = put_text_on_image(vis_image, keyword)
     return label_image
 
-def image_to_text(image_path):
+def read_text(image_path, queue):
     reader = easyocr.Reader(['ch_tra'])
     result = reader.readtext(image_path)
-    texts = [result[i][-2] for i in range(len(result))]
-    for i, text in enumerate(texts):
-        print (i, text)
-    return texts
+    queue.put(result)
+
+def image_to_text(image_path):
+    queue = multiprocessing.Queue()
+    process = multiprocessing.Process(target=read_text, args=(image_path, queue))
+    process.start()
+
+    # Wait for 10 seconds or until process finishes
+    process.join(10)
+
+    if process.is_alive():
+        print("OCR is taking longer than expected. Terminating process...")
+        process.terminate()
+        process.join()
+    
+    # Get the result
+    if not queue.empty():
+        result = queue.get()
+        # print(result)
+
+        # reader = easyocr.Reader(['ch_tra'])
+        # result = reader.readtext(image_path)
+        texts = [result[i][-2] for i in range(len(result))]
+        for i, text in enumerate(texts):
+            print (i, text)
+        return texts
+    return []
 
 
 bot = telebot.TeleBot(secret.apiToken)  # replace "api" with your bot's API token
@@ -112,7 +136,7 @@ def handle_text(message):
 # Handler for images/photos
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    # Process the photo message
+    # Process the photo message 
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     
@@ -123,11 +147,17 @@ def handle_photo(message):
     with open(image_path, 'wb') as new_file:
         new_file.write(downloaded_file)
     texts = image_to_text(image_path)
+    if len(texts) == 0:
+        bot.reply_to(message, "No text found.")
+        return
+    
     chinese_dishes = get_chinese_dish(texts)
     chinese_dishes = [dish for dish in chinese_dishes if dish.count(',') == 2]
 
+    start_time = time.time()
     if chinese_dishes and len(chinese_dishes) > 0:
-        for i, dish in enumerate(chinese_dishes):
+        bot.reply_to(message, '\n'.join(chinese_dishes))
+        for i, dish in tqdm(enumerate(chinese_dishes)):
             bot.reply_to(message, dish)
             vis_image = crawl_image(dish)
             if vis_image is None:
@@ -137,6 +167,11 @@ def handle_photo(message):
             vis_image.save(bio, 'JPEG')
             bio.seek(0)
             bot.send_photo(message.chat.id, photo=bio)
+
+            now = time.time()
+            #if running time larger than 1 minute: break
+            if now - start_time > 60:
+                break
     else:
         response = "No dish found."
         bot.reply_to(message, response)
